@@ -1,0 +1,23 @@
+Proposito da ferramenta:
+
+	Monitorar o vencimentos dos registros avisando os clientes com 2 dias de antecedencia;
+
+Funcionalidades:
+
+	Envio de emails via outlook;
+	Recepção dos emails e resposta automática baseado no codigo gerado;
+	Envio de relatório simples ao final do dia;
+
+Cronograma de envios:
+	Respeitar horario de trabalho entre 8:00 e 18:00
+	1º Disparo Comunicado de Vencimento quando o campo cs_01_Movimento.Venc_D-2 for igual a data atual;
+	2º Monitorar a caixa do Outlook e caso o ID no assunto seja valido, comparar com tabela tb_02_Monitor.ID caso a resposta contenha #PRORROGAR envia email Resposta - Opção Positiva,
+	caso a resposta contenha #NAOPRORROGAR enviar email Resposta - Opção Negativa.
+	3º Disparo Resposta - Caso cs_01_Movimento.Venc_D-1 for igual a data atual e não houver resposta do cliente disparar o aviso de Não Retorno por parte da Empresa.
+	4º Caso o cliente ja tenha enviado o email consultar tb_02_Monitor e enviar Comunicado de Duplicidade;
+	5º Caso as resposta não contenha ID e resposta com # enviar Comunicado de Resposta Fora do Padrão.
+
+Duvidas:
+	E-mail: digital_experience@outlook.com
+		givamarinheiro@gmail.com
+	Telefone: 19 99574-6287

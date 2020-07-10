@@ -1,0 +1,662 @@
+Option Compare Database
+Option Explicit
+
+#If VBA7 Then
+    Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As LongPtr)
+#Else
+    Public Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+#End If
+
+Public Enum OutlookAcao
+    Rascunho = 1
+    Enviar = 2
+    EnviarDoRascunho = 3
+End Enum
+
+Public Enum TipoEmail
+    Html = 1
+    Template = 2
+End Enum
+
+Public StatusApp    As Boolean
+Public appOtlk      As Object 'Outlook.Application
+Private regex       As Object 'VBScript_RegExp_55.RegExp
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Inicia processo de envio e monitoramento de e-mail
+Function MonitorarEmail()
+    
+    On Error GoTo TratarErro
+    
+    StatusApp = True
+    Form_frmPainelControle.txtQtdeCiclo.Value = 0
+    
+    Do While StatusApp = True
+        ObterComunicadoVenc
+        If StatusApp = True Then
+            Form_frmPainelControle.txtQtdeCiclo.Value = Form_frmPainelControle.txtQtdeCiclo.Value + 1
+        End If
+        Form_frmPainelControle.txtStatus.Value = "Aguardando inicialização do próximo ciclo..."
+        VBA.DoEvents
+        If StatusApp = True Then Aguardar Nz(Form_frmPainelControle.txtIntervalo.Value, 0)
+    Loop
+
+    With Form_frmPainelControle
+        .btnInterromper.Enabled = False
+        .btnIniciar.Enabled = True
+        .btnReport.Enabled = True
+        .txtStatus.Value = "Aguardando inicialização..."
+    End With
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: MonitorarEmail", vbCritical, "Erro na Ferramenta"
+    StatusApp = False
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Interrompe processo de envio e monitoramento de e-mail
+Sub InterromperProcesso()
+    StatusApp = False
+End Sub
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Realiza o envio de e-mail e chama rotina de monitoramento de e-mail
+Sub ObterComunicadoVenc()
+    
+    Dim rs              As Object 'ADODB.Recordset
+    Dim rst             As Object 'ADODB.Recordset
+    Dim OtlkMail        As Object 'MailItem
+    
+    Dim CaminhoEmail    As String
+    Dim strHtml         As String
+    Dim Id              As Double
+    Dim arrRetorno      As Variant
+    Dim arrResp         As Variant
+    
+    Const FormatoEmail = TipoEmail.Html
+        
+    On Error GoTo TratarErro
+    
+    Form_frmPainelControle.txtStatus.Value = "Verificando vencimento D-2..."
+    CaminhoEmail = CurrentProject.Path & "\_apoio\mod_01.html"
+    Set rs = ObterRs("ObterVenc_D2", adCmdStoredProc)
+            
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+    If appOtlk Is Nothing Then Set appOtlk = CreateObject("Outlook.Application")
+    If rs.EOF Then GoTo Fim
+    
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+    If FormatoEmail = TipoEmail.Html Then
+        strHtml = LerArquivo(CaminhoEmail)
+        If strHtml = VBA.vbNullString Then
+            MsgBox "Não foi possível obter o código HTML do e-mail!", vbOKOnly + vbCritical, "E-mail sem HTML"
+            GoTo Fim
+        End If
+    ElseIf FormatoEmail = TipoEmail.Template Then
+        Set OtlkMail = appOtlk.CreateItemFromTemplate(CaminhoEmail)
+        strHtml = OtlkMail.HTMLBody
+    End If
+    
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+    Do While Not rs.EOF
+        If rst Is Nothing Then
+            Set rst = ObterRs("tb_02_Monitor", adCmdTable, adOpenKeyset, adLockOptimistic)
+        End If
+        
+        rst.AddNew
+        Id = rst.Fields("ID").Value
+        
+        arrRetorno = ValidarHtml(strHtml, Id, "@Empresa", rs.Fields("Empresa").Value, _
+                                 "@Contrato", rs.Fields("Contrato").Value, _
+                                 "@Vencimento", rs.Fields("Vencimento").Value, _
+                                 "@Valor", VBA.FormatCurrency(rs.Fields("Valor").Value), _
+                                 "@Juros", VBA.FormatCurrency(rs.Fields("Juros").Value))
+        
+        If arrRetorno(0) = "Invalido" Then
+            Set rst = Nothing:    GoTo Fim
+        ElseIf arrRetorno(0) = "Modificado" And FormatoEmail = TipoEmail.Template Then
+            OtlkMail.HTMLBody = arrRetorno(1)
+            OtlkMail.SaveAs CaminhoEmail
+        End If
+                            
+        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+        If FormatoEmail = TipoEmail.Html Then
+            arrResp = ProcessarEmail(appOtlk, rs.Fields("Email").Value, "", "", "ID:" & Id & " Aviso Vencimento", arrRetorno(1), Enviar, FormatoEmail, "")
+        ElseIf FormatoEmail = TipoEmail.Template Then
+            arrResp = ProcessarEmail(appOtlk, rs.Fields("Email").Value, "", "", "ID:" & Id & " Aviso Vencimento", "", Enviar, FormatoEmail, CaminhoEmail)
+        End If
+        
+        VBA.DoEvents:    If StatusApp = False Then GoTo Fim
+        If Not VBA.IsArray(arrResp) Then
+            MsgBox "O envio de um email não foi efetivado!", vbOKOnly + vbCritical, "Envio e-mail"
+            GoTo Fim
+        End If
+        If arrResp(0) = False Then GoTo Fim
+        
+        rst.Fields("Contrato").Value = rs.Fields("Contrato").Value
+        rst.Fields("Data").Value = arrResp(1)
+        rst.Fields("Status").Value = "Aviso Empresa"
+        rst.Update
+
+        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+
+        rs.MoveNext
+    Loop
+    
+Fim:
+    If StatusApp = True Then
+        RemoverObjetos rs, rst, OtlkMail
+        
+        LerEmail appOtlk
+    Else
+        RemoverObjetos rs, rst, OtlkMail, appOtlk
+    End If
+
+    Exit Sub
+    Resume
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterComunicadoVenc", vbCritical, "Erro na Ferramenta"
+    StatusApp = False:      GoTo Fim
+End Sub
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Monitora o recebimento de de e-mail
+Function LerEmail(ByRef appOtlk As Object)
+
+    Dim oFolder             As Object 'Folder
+    Dim oMail               As Object 'Outlook.MailItem
+    Dim oNamespace          As Object 'Outlook.NameSpace
+    Dim rs                  As Object 'ADODB.Recordset
+    Dim dicIdEmail          As Object 'scripting.Dictionary
+    Dim dicIdStatus         As Object 'Scripting.Dictionary
+    
+    Dim CaminhoEmailPath    As String
+    Dim Id                  As Double
+    Dim retorno             As Boolean
+    Dim cont                As Double
+    Dim strPadrao           As String
+    Dim strExpr             As String
+    Dim arrDados            As Variant
+    Dim Status              As String
+    Dim strHtml             As String
+    
+    Const RetornoPositivo = "mod_02.html"
+    Const RetornoNegativo = "mod_03.html"
+    Const SemRetorno = "mod_04.html"
+    Const ForaPadrao = "mod_05.html"
+    Const Duplicidade = "mod_06.html"
+        
+    On Error GoTo TratarErro
+    Form_frmPainelControle.txtStatus.Value = "Realizando leitura e monitoramento dos e-mails"
+    CaminhoEmailPath = CurrentProject.Path & "\_apoio\"
+    
+    Set oNamespace = appOtlk.GetNamespace("MAPI")
+    Set oFolder = oNamespace.GetDefaultFolder(6) 'olFolderInbox
+    Set rs = ObterRs("ObterIdStatus", adCmdStoredProc)
+            
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+    With rs
+        Do While Not .EOF
+            strPadrao = strPadrao & .Fields("ID").Value & "|"
+            strExpr = strExpr & "<div id=" & """idEmail:" & .Fields("ID").Value & """>|"
+            .MoveNext
+        Loop
+        If strExpr <> VBA.vbNullString Then strExpr = VBA.Left(strExpr, VBA.Len(strExpr) - 1) Else GoTo Fim
+        If strPadrao <> VBA.vbNullString Then strPadrao = VBA.Left(strPadrao, VBA.Len(strPadrao) - 1)
+    End With
+
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+    
+    Set dicIdEmail = ObterDicId
+    Set dicIdStatus = ObterDicIdStatus
+        
+    'Durante os testes verifiquei que na leitura dos emails ocorreu o erro
+    'número 13 (tipos incompatíveis), provavelmente porque havia emails que
+    'não puderam ser entregues ao destinatário final, então esse tratamento
+    'trata esse caso especificamente durante a leitura dos emails
+    On Error GoTo TratarExcecoes
+    For Each oMail In oFolder.Items
+Continuar:
+        If TypeName(oMail) = "MailItem" Then
+            If TestRegex(strExpr, oMail.HTMLBody) = True Then
+                VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                If TestRegex(strPadrao, oMail.Subject) = True Then
+                    Id = MatchRegex(oMail.Subject)
+                    If Not dicIdEmail.Exists(Id) Then GoTo Proximo
+                    dicIdEmail.Item(Id) = dicIdEmail.Item(Id) + 1
+                    If dicIdEmail.Item(Id) > 1 Then
+                        If dicIdStatus.Item(Id) = "Duplicidade" Then GoTo Proximo
+                        retorno = RespEmail(CaminhoEmailPath & Duplicidade, oMail)
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                        AtualizarStatus retorno, Id, "Duplicidade"
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                    ElseIf VBA.InStr(1, oMail.Body, "#PRORROGAR", vbTextCompare) > 0 Then
+                        If dicIdStatus.Item(Id) = "Retorno Positivo" Or dicIdStatus.Item(Id) = "Duplicidade" Then GoTo Proximo
+                        retorno = RespEmail(CaminhoEmailPath & RetornoPositivo, oMail)
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                        AtualizarStatus retorno, Id, "Retorno Positivo"
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                    ElseIf VBA.InStr(1, oMail.Body, "#NAOPRORROGAR", vbTextCompare) Then
+                        If dicIdStatus.Item(Id) = "Retorno Negativo" Or dicIdStatus.Item(Id) = "Duplicidade" Then GoTo Proximo
+                        retorno = RespEmail(CaminhoEmailPath & RetornoNegativo, oMail)
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                        AtualizarStatus retorno, Id, "Retorno Negativo"
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                    ElseIf VBA.InStr(1, oMail.Body, "#PRORROGAR", vbTextCompare) = 0 Or VBA.InStr(1, oMail.Body, "#NAOPRORROGAR", vbTextCompare) = 0 Then
+                        If dicIdStatus.Item(Id) = "Fora Padrao" Or dicIdStatus.Item(Id) = "Duplicidade" Then GoTo Proximo
+                        retorno = RespEmail(CaminhoEmailPath & ForaPadrao, oMail)
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                        AtualizarStatus retorno, Id, "Fora Padrao"
+                        VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                    End If
+                Else
+                    If dicIdStatus.Item(Id) = "Fora Padrao" Or dicIdStatus.Item(Id) = "Duplicidade" Then GoTo Proximo
+                    retorno = RespEmail(CaminhoEmailPath & ForaPadrao, oMail)
+                    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                    AtualizarStatus retorno, Id, "Fora Padrao"
+                    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+                End If
+            End If
+        Else
+            If oMail Is Nothing Then GoTo Proximo
+        End If
+    VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+Proximo:
+    Next
+    
+    On Error GoTo TratarErro
+    
+    arrDados = ObterArray("ObterId", "")
+    If VBA.IsArray(arrDados) Then
+        For cont = LBound(arrDados) To UBound(arrDados, 2)
+            strHtml = LerArquivo(CaminhoEmailPath & SemRetorno)
+            ProcessarEmail appOtlk, arrDados(1, cont), "", "", "Sem Retorno", strHtml, Enviar, Html, ""
+            VBA.DoEvents:   If StatusApp = False Then GoTo Fim
+            AtualizarStatus True, arrDados(0, cont), "Sem Retorno"
+            DoEvents:   If StatusApp = False Then GoTo Fim
+        Next
+    End If
+
+Fim:
+    RemoverObjetos oFolder, oMail, oNamespace, rs, dicIdEmail, dicIdStatus
+    
+    Exit Function
+    
+TratarExcecoes:
+    If Err.Number = 13 Then
+        GoTo Continuar
+    Else
+        GoTo TratarErro
+    End If
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterComunicadoVenc", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Atualiza a tabela tb_02_Monitor
+Sub AtualizarStatus(ByVal retorno As Boolean, ByVal Id As Double, ByVal Status As String)
+
+    On Error GoTo TratarErro
+
+    If retorno = True Then
+        ExecutarConsulta "UpdStatus", adCmdStoredProc, Array(Id, Status)
+    Else
+        MsgBox "Não foi possível enviar e-mail!"
+    End If
+    
+    Exit Sub
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: AtualizarStatus", vbCritical, "Erro na Ferramenta"
+End Sub
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Pausa a execução do código pelo tempo determinado
+Function Aguardar(segundos As Double)
+
+    Dim tempo   As Double
+
+    On Error GoTo TratarErro
+    'Sem a estrutura de repetição a tela apresenta 'não respondendo' com intervalos mais longos
+    For tempo = 1 To segundos
+        Sleep 1000
+        VBA.DoEvents: If StatusApp = False Then Exit Function
+    Next
+    
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: Aguardar", vbCritical, "Erro na Ferramenta"
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Verifique se o Html possui a tag <body> e insere id de identificação
+Function ValidarHtml(ByVal strHtml As String, ByVal idEmail As String, _
+                     ParamArray Parametros() As Variant) As Variant
+        
+    Dim cont    As Integer
+    
+    On Error GoTo TratarErro
+        
+    If VBA.InStr(1, strHtml, "<body>", vbTextCompare) > 0 Then
+        strHtml = VBA.Replace(strHtml, "<body>", "<body>" & VBA.vbNewLine & "<div id=" & """idEmail:" & idEmail & """>")
+        
+        For cont = LBound(Parametros) To UBound(Parametros) Step 2
+            If VBA.InStr(1, strHtml, Parametros(cont), vbTextCompare) > 0 Then
+                strHtml = VBA.Replace(strHtml, Parametros(cont), Parametros(cont + 1))
+            End If
+        Next
+    
+        ValidarHtml = Array("Modificado", strHtml)
+    Else
+       MsgBox "Html imválido, é necessário ter a tag </body> para inserir o id de validação do e-mail!", _
+              vbOKOnly + vbCritical, "Validação e-mail"
+       ValidarHtml = Array("Invalido"): Exit Function
+    End If
+    
+    Exit Function
+    Resume
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ValidarHtml", vbCritical, "Erro na Ferramenta"
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Realiza a leitura de um arquivo composto por caracteres
+Function LerArquivo(ByVal caminho As String) As String
+    
+    Dim fso               As Object 'Scripting.FileSystemObject
+    Dim ts                As Object
+    Dim filename          As String
+    Dim sContent          As String
+    Dim pFile             As String
+  
+    On Error GoTo TratarErro
+  
+    Set fso = VBA.CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.OpenTextFile(caminho)
+    sContent = ts.ReadAll
+    ts.Close
+    LerArquivo = sContent
+    On Error GoTo 0
+
+Fim:
+    RemoverObjetos fso, ts
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: LerArquivo", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Realiza o envio de e-mail
+Public Function ProcessarEmail(ByRef appOtlk As Object, ByVal EmailTo As String, _
+                                ByVal EmailCC As String, ByVal EmailBCC As String, _
+                                ByVal assunto As String, ByVal Conteudo As String, _
+                                ByVal AppAcao As OutlookAcao, ByVal FormatoEmail As TipoEmail, _
+                                ByVal CaminhoArquivo As String, _
+                                ParamArray arrCaminhoAnexo() As Variant) As Variant
+    
+    Dim OtlkMail        As Object 'MailItem
+    Dim cont            As Integer
+
+    On Error GoTo TratarErro
+
+    Select Case FormatoEmail
+        Case TipoEmail.Html
+           Set OtlkMail = appOtlk.CreateItem(0)
+           OtlkMail.HTMLBody = Conteudo
+        Case TipoEmail.Template
+           Set OtlkMail = appOtlk.CreateItemFromTemplate(CaminhoArquivo)
+    End Select
+    
+    With OtlkMail
+        .To = EmailTo
+        .cc = EmailCC
+        .BCC = EmailBCC
+        .Subject = assunto
+        
+        For cont = LBound(arrCaminhoAnexo) To UBound(arrCaminhoAnexo)
+            .Attachments.Add arrCaminhoAnexo(cont)
+        Next
+        
+        Select Case AppAcao
+            Case OutlookAcao.Rascunho
+                .Close 0
+            Case OutlookAcao.Enviar
+                .Send
+        End Select
+        ProcessarEmail = Array(True, Now)
+    End With
+Fim:
+    Set OtlkMail = Nothing
+            
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ProcessarEmail", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Obtêm dicionário da consulta "ObterId"
+Function ObterDicId()
+
+    Dim rs              As Object 'ADODB.Recordset
+    Dim dic             As Object 'Scripting.Dictionary
+    
+    On Error GoTo TratarErro
+    
+    Set rs = ObterRs("ObterIdStatus", adCmdStoredProc)
+    Set dic = CreateObject("Scripting.Dictionary")
+    dic.CompareMode = 1    'TextCompare
+    
+    Do While Not rs.EOF And Not rs.BOF
+        dic.Add rs.Fields("ID").Value, 0
+        rs.MoveNext
+    Loop
+    
+    Set ObterDicId = dic
+Fim:
+    RemoverObjetos rs, dic
+    
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterDicId", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Obtêm dicionário da consulta "ObterIdStatus"
+Function ObterDicIdStatus()
+
+    Dim rs              As Object 'ADODB.Recordset
+    Dim dic             As Object 'Scripting.Dictionary
+    
+    On Error GoTo TratarErro
+    
+    Set rs = ObterRs("ObterIdStatus", adCmdStoredProc)
+    Set dic = CreateObject("Scripting.Dictionary")
+    dic.CompareMode = 1    'TextCompare
+    
+    Do While Not rs.EOF And Not rs.BOF
+        dic.Add rs.Fields("ID").Value, rs.Fields("Status").Value
+        rs.MoveNext
+    Loop
+    
+    Set ObterDicIdStatus = dic
+Fim:
+    RemoverObjetos rs, dic
+    
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterDicId", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Responde e-mail a partir do objeto Outlook.MailItem
+Function RespEmail(ByVal CaminhoResp As String, ByVal oMail As Object) As Boolean
+    
+    Dim strHtml     As String
+
+    On Error GoTo TratarErro
+
+    strHtml = LerArquivo(CaminhoResp)
+    
+    If strHtml <> VBA.vbNullString Then
+        Set oMail = oMail.ReplyAll
+        oMail.HTMLBody = strHtml & VBA.Chr(13) & oMail.HTMLBody
+        oMail.Send
+            
+        RespEmail = True
+    End If
+
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: RespEmail", vbCritical, "Erro na Ferramenta"
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Testa expressões regulares
+Function TestRegex(Padrao As String, expressao As String) As Boolean
+                    
+    On Error GoTo TratarErro
+                    
+    If regex Is Nothing Then Set regex = CreateObject("VBScript.RegExp") 'New VBScript_RegExp_55.RegExp
+                
+    With regex
+        .Global = True
+        .IgnoreCase = True
+        .Pattern = Padrao
+        
+        TestRegex = .Test(expressao)
+    End With
+    
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: TestRegex", vbCritical, "Erro na Ferramenta"
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Retorna o primeiro valor de uma expressão regular
+Function MatchRegex(expressao) As Variant
+
+    Dim MatchExp           As Object 'VBScript_RegExp_55.MatchCollection
+             
+    On Error GoTo TratarErro
+             
+    Set MatchExp = regex.Execute(expressao)
+    MatchRegex = MatchExp.Item(0).Value
+
+Fim:
+    Set MatchExp = Nothing
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: MatchRegex", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Insere dados em uma planilha Excel com base em uma consulta e envia por e-mail
+Function GerarExcel(ByVal strNome As String, ByVal NomeConsulta As String, ByVal strEmail As String) As Boolean
+
+    Dim appExcel    As Object   'Excel.Application
+    Dim wbk         As Object   'Excel.Workbook
+    Dim sht         As Object   'Excel.Worksheet
+    Dim AuxSht      As Object   'Excel.Worksheet
+    Dim rs          As Object
+    Dim appOtlk     As Object
+    Dim arrRetorno  As Variant
+    
+    On Error GoTo TratarErro
+    
+    Set rs = ObterRs(NomeConsulta, adCmdTable, adOpenForwardOnly, adLockReadOnly)
+    
+    If rs Is Nothing Then: MsgBox "Não há dados a serem enviados no relário!", vbInformation, "Gerar relatório!": Exit Function
+        
+    Set appExcel = CreateObject("Excel.Application") 'New Excel.Application
+    Set wbk = appExcel.Workbooks.Open(CurrentProject.Path & "\_report\" & strNome & ".xlsx")
+
+    For Each AuxSht In wbk.Worksheets
+        If AuxSht.Name = strNome Or AuxSht.CodeName = strNome Then
+            Set sht = AuxSht
+        End If
+    Next
+    
+    sht.range("A2:N" & sht.Rows.Count).EntireRow.ClearContents
+    sht.range("A2").CopyFromRecordset rs
+    wbk.Save
+    appExcel.Quit
+    
+    Set appOtlk = CreateObject("Outlook.Application")
+    arrRetorno = ProcessarEmail(appOtlk, strEmail, "", "", "Report " & VBA.Now, "Relatório do dia.", Enviar, Html, "", CurrentProject.Path & "\_report\" & strNome & ".xlsx")
+    GerarExcel = arrRetorno(0)
+    
+Fim:
+    Set appExcel = Nothing
+    Set wbk = Nothing
+    Set sht = Nothing
+    Set appOtlk = Nothing
+
+    Exit Function
+    Resume
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: GerarExcel", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function

@@ -1,0 +1,209 @@
+Option Compare Database
+Option Explicit
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Retorna um array com base em uma consulta ou recordset
+Function ObterArray(ByVal OrigemDados As Variant, Optional ByVal arrParam As Variant) As Variant
+
+    Dim rs              As Object 'ADODB.Recordset
+    Dim arrResultado    As Variant
+    
+    On Error GoTo TratarErro
+    
+    Set rs = VBA.CreateObject("ADODB.Recordset")
+    
+    If VBA.TypeName(OrigemDados) = "String" Then
+        Set rs = ObterRs(OrigemDados, adCmdStoredProc, adOpenForwardOnly, adLockReadOnly, arrParam)
+    Else
+        Set rs = OrigemDados
+    End If
+
+    With rs
+        If ValidarRecordset(rs) Then
+            arrResultado = .GetRows(VBA.CLng(.RecordCount))
+        Else
+            arrResultado = Empty
+        End If
+    End With
+    ObterArray = arrResultado
+
+Fim:
+    Set rs = Nothing
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterArray", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Verifica se é um objeto e se não está sem dados
+Function ValidarRecordset(ByRef rs As Object) As Boolean
+    
+    Dim Resultado       As Boolean
+
+    On Error GoTo TratarErro
+
+    If Not rs Is Nothing Then
+        With rs
+            If Not .BOF And Not .EOF Then
+                Resultado = True
+            Else
+                Resultado = False
+            End If
+        End With
+    Else
+        Resultado = False
+    End If
+    
+    ValidarRecordset = Resultado
+    
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ValidarRecordset", vbCritical, "Erro na Ferramenta"
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Executa uma consulta
+Function ExecutarConsulta(ByVal NomeConsulta As String, TipoCmd As CommandTypeEnum, _
+                          Optional ByVal arrParam As Variant) As Boolean
+
+    Dim cmd         As Object 'ADODB.Command
+    Dim rs          As Object 'ADODB.Recordset
+
+    On Error GoTo TratarErro
+
+    Set cmd = ObterComando(NomeConsulta, TipoCmd, arrParam)
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.Open cmd
+        
+    ExecutarConsulta = True
+    
+Fim:
+    RemoverObjetos rs, cmd
+
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ExecutarConsulta", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Retorna um recordset com base em uma origem válida
+Function ObterRs(ByVal Origem As String, ByVal TipoCmd As CommandTypeEnum, _
+                 Optional ByVal TipoCursor As CursorTypeEnum = adLockUnspecified, _
+                 Optional ByVal TipoBloqueio As LockTypeEnum = adLockUnspecified, _
+                 Optional ByVal arrParam As Variant) As Object 'ADODB.Recordset
+    
+    Dim cmd         As Object 'ADODB.Command
+    Dim rs          As Object 'ADODB.Recordset
+
+    On Error GoTo TratarErro
+
+    Set cmd = ObterComando(Origem, TipoCmd, arrParam)
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.Open cmd, , TipoCursor, TipoBloqueio
+    
+    Set ObterRs = rs
+
+Fim:
+    RemoverObjetos cmd, rs
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterRs", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Retorna o objeto ADODB.Command
+Function ObterComando(ByVal strCmd As String, ByVal TipoCmd As CommandTypeEnum, _
+                      Optional ByVal arrParam As Variant) As Object
+
+    Dim cn      As Object 'ADODB.Connection
+    Dim prt     As Object 'ADODB.Parameter
+    Dim cmd     As Object 'ADODB.Command
+    Dim cont    As Byte
+    
+    On Error GoTo TratarErro
+               
+    Set cn = CreateObject("ADODB.Connection") 'New ADODB.Connection
+    Set cn = Access.CurrentProject.Connection
+        
+    Set cmd = CreateObject("ADODB.Command") 'New ADODB.Command
+    With cmd
+        .ActiveConnection = cn
+        .CommandType = TipoCmd
+        .CommandText = strCmd
+        
+        If VBA.IsArray(arrParam) Then
+            For cont = LBound(arrParam) To UBound(arrParam)
+                Set prt = CreateObject("ADODB.Parameter") 'New ADODB.Parameter
+                With prt
+                    .Value = arrParam(cont)
+                    Select Case VBA.TypeName(arrParam(cont))
+                        Case "INTEGER": .Type = adInteger
+                        Case "DATE": .Type = adDate
+                        Case "STRING": .Type = adVarChar:   .Size = VBA.Len(arrParam(cont))
+                        Case "LONG": .Type = adBigInt
+                        Case "BYTE": .Type = adSmallInt
+                        Case "DOUBLE": .Type = adDouble
+                        Case "BOOLEAN": .Type = adBoolean
+                        Case Else: .Type = adVarChar:       .Size = 255
+                    End Select
+                    .Direction = adParamInput
+                End With
+                .Parameters.Append prt
+                Set prt = Nothing
+            Next
+        End If
+    End With
+             
+    Set ObterComando = cmd
+             
+Fim:
+    RemoverObjetos cmd, cn
+    Exit Function
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: ObterComando", vbCritical, "Erro na Ferramenta"
+    GoTo Fim
+End Function
+
+'Autor: Matheus Araújo
+'Data: 06/2020
+'Descrição: Desassocia objetos da variável
+Sub RemoverObjetos(ParamArray arrObj() As Variant)
+    
+    Dim cont    As Double
+    
+    On Error GoTo TratarErro
+    
+    For cont = LBound(arrObj) To UBound(arrObj)
+        If IsObject(arrObj(cont)) = True Then Set arrObj(cont) = Nothing
+    Next
+    
+    Exit Sub
+TratarErro:
+    MsgBox "Ocorreu um erro inesperado. Contate o suporte da ferramenta!" & _
+           VBA.Chr(10) & "É recomendável tirar um print da tela para que " & _
+           "o erro possa ser analisado!" & VBA.Chr(10) & "Erro: " & Err.Description & _
+           VBA.Chr(10) & "Número: " & Err.Number & VBA.Chr(10) & "Rotina: RemoverObjetos", vbCritical, "Erro na Ferramenta"
+End Sub
